@@ -30,24 +30,68 @@ workspace.
 
 ## Build
 
-Requirements:
+### Requirements
 
-- Windows 11 and Visual Studio 2022 with the C++20 MSVC toolchain
+- Windows 11
+- Visual Studio 2022 with the C++20 MSVC toolchain
+- A Windows SDK that provides C++/WinRT headers (10.0.22000 or later)
 - CMake 3.21+
 - Qt 6.5+ with Core, Concurrent, Gui, Network, Qml, Quick, Quick Controls,
-  Quick Dialogs, Quick Layouts, Shader Tools, and Test
+  Quick Dialogs, Quick Layouts, Shader Tools, Test, and Widgets
 
-From a Qt-enabled developer shell:
+Only the MSVC toolchain is supported. Ava links directly against Direct3D 11,
+DWM, PDH, Windows Core Audio, and WinRT capture APIs.
+
+### Install the toolchain
+
+If you already have a Qt-enabled developer shell, skip to *Configure and build*.
+
+Visual Studio 2022 Build Tools are enough; the full IDE is not required. Install
+the *Desktop development with C++* workload, then CMake:
 
 ```powershell
-cmake -S . -B build
-cmake --build build --config Release
+winget install --id Kitware.CMake --exact
+```
+
+Qt can be installed without a Qt account using `aqtinstall`. `qtshadertools` is
+an add-on module and must be requested explicitly; the remaining modules ship
+with the base package:
+
+```powershell
+python -m pip install aqtinstall
+python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtshadertools -O C:\Qt
+```
+
+### Configure and build
+
+Point CMake at the Qt kit unless `qmake` is already on `PATH`:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
+cmake --build build --config Release --parallel
 .\build\Release\Ava.exe
 .\build\Release\AvaChat.exe
 ```
 
-To run the native test suite, ensure the active Qt `bin` directory and
-`build/Release` are on `PATH`, then run:
+Running from `build\Release` requires the Qt `bin` directory on `PATH`.
+
+### Deploy a standalone build
+
+The install target copies both executables and runs `windeployqt`, producing a
+self-contained tree that runs without Qt on `PATH`:
+
+```powershell
+cmake --install build --config Release --prefix .\dist
+.\dist\bin\Ava.exe
+```
+
+The result is `dist\bin` (executables and Qt DLLs), `dist\plugins`, and
+`dist\qml`, wired together by a generated `dist\bin\qt.conf`. `dist/` is
+ignored by Git.
+
+### Tests
+
+Ensure the active Qt `bin` directory and `build/Release` are on `PATH`, then:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
@@ -55,6 +99,39 @@ ctest --test-dir build -C Release --output-on-failure
 
 The authenticated Codex end-to-end test is opt-in through
 `AVA_RUN_LIVE_CODEX_TEST=1` because it uses the current account and workspace.
+
+### Runtime dependencies
+
+AvaChat and the island's Codex panel require the Codex CLI, installed and
+signed in, at a version that provides `codex app-server`:
+
+```powershell
+npm install -g @openai/codex
+codex login
+```
+
+Ava discovers the CLI through `AVA_CODEX_EXECUTABLE` first, then the global npm
+package, common shim locations, and finally `PATH`. Git must be on `PATH` for
+worktrees and the Git change center. An authenticated GitHub CLI (`gh`) is
+needed only to create pull requests from AvaChat.
+
+### Notes and known issues
+
+- **The Liquid Glass shader is split across two adjacent string literals.**
+  MSVC truncates any single string literal longer than roughly 16,380
+  characters (error C2026). The HLSL pixel shader in
+  `src/liquidglasscaptureworker.cpp` exceeds that, so it is written as two
+  adjacent literals, which the compiler concatenates after the per-literal
+  check. Keep the split when editing the shader; merging the halves back into
+  one literal breaks the build.
+- **Smart App Control blocks locally built binaries.** Ava is unsigned, so a
+  machine with Smart App Control enabled refuses to start it with *"An
+  Application Control policy has blocked this file"*. Verify with
+  `Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy"`, where
+  `VerifiedAndReputablePolicyState` is `0` for off, `1` for enforcing, and `2`
+  for evaluation. Self-signing does not help, because Smart App Control
+  requires a reputable publisher signature. Turning it off is permanent until
+  Windows is reinstalled.
 
 ## License
 
