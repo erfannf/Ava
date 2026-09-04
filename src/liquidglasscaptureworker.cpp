@@ -359,7 +359,12 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET
                                             1.0 - glassAnisotropy);
     const float2 samplePosition = requestRect.xy + position.xy
                                   + anisotropicBend + centerBend + pointerFlex;
-
+)"
+// MSVC caps a single string literal at ~16380 characters (error C2026).
+// Adjacent string literals are concatenated after that per-literal check,
+// so the shader source is split here. The text is unchanged: the first part
+// ends with a newline and the second begins immediately after it.
+R"(
     // Reduce the live capture into a persistent mip chain before this optical
     // draw. Sampling the reduced image removes high-frequency detail as a
     // continuous field; a sparse wide kernel leaves visible stippling because
