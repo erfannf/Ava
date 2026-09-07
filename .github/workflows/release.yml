@@ -20,25 +20,42 @@ jobs:
             qt_arch: win64_msvc2022_64
             cmake_arch: x64
             wix_arch: x64
+            # qtshadertools is a separate add-on module only on x64
+            qt_modules: qtshadertools
           - arch: x86
             qt_arch: win32_msvc2022
             cmake_arch: Win32
             wix_arch: x86
+            # qtshadertools is bundled in the base package for x86
+            qt_modules: ''
           - arch: arm64
             qt_arch: win64_msvc2022_arm64
             cmake_arch: ARM64
             wix_arch: arm64
+            # qtshadertools is bundled in the base package for arm64;
+            # ARM64 also requires the x64 host Qt to be installed first
+            qt_modules: ''
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ARM64 cross-compilation requires the x64 Qt host tools
+      - name: Install Qt (x64 host tools for ARM64 cross-compile)
+        if: matrix.arch == 'arm64'
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.8.*'
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          set-env: false
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v3
         with:
           version: '6.8.*'
           arch: ${{ matrix.qt_arch }}
-          modules: qtshadertools
+          modules: ${{ matrix.qt_modules }}
 
       - name: Configure CMake
         run: >
@@ -69,7 +86,7 @@ jobs:
           cd build
           cpack -C Release -G WIX
 
-      - name: Find MSI artifact
+      - name: Find and rename MSI artifact
         id: find_msi
         run: |
           $arch = "${{ matrix.arch }}"
