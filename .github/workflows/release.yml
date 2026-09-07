@@ -9,8 +9,25 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            qt_arch: win64_msvc2022_64
+            cmake_arch: x64
+            wix_arch: x64
+          - arch: x86
+            qt_arch: win32_msvc2022
+            cmake_arch: Win32
+            wix_arch: x86
+          - arch: arm64
+            qt_arch: win64_msvc2022_arm64
+            cmake_arch: ARM64
+            wix_arch: arm64
 
     steps:
       - name: Checkout
@@ -20,11 +37,15 @@ jobs:
         uses: jurplel/install-qt-action@v3
         with:
           version: '6.8.*'
-          arch: win64_msvc2022_64
+          arch: ${{ matrix.qt_arch }}
           modules: qtshadertools
 
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: >
+          cmake -S . -B build
+          -A ${{ matrix.cmake_arch }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DCPACK_WIX_ARCHITECTURE=${{ matrix.wix_arch }}
 
       - name: Build
         run: cmake --build build --config Release
@@ -33,11 +54,15 @@ jobs:
         run: |
           $qtBin = "$env:Qt6_DIR\bin"
           & "$qtBin\windeployqt.exe" --qmldir qml --release build\Release\Ava.exe
+          if (Test-Path "build\Release\AvaChat.exe") {
+            & "$qtBin\windeployqt.exe" --qmldir qml\chat --release build\Release\AvaChat.exe
+          }
 
       - name: Create portable zip
         run: |
           $tag = "${{ github.ref_name }}"
-          Compress-Archive -Path build\Release\* -DestinationPath "Ava-$tag-portable.zip"
+          $arch = "${{ matrix.arch }}"
+          Compress-Archive -Path build\Release\* -DestinationPath "Ava-$tag-$arch-portable.zip"
 
       - name: Build MSI installer
         run: |
@@ -47,14 +72,36 @@ jobs:
       - name: Find MSI artifact
         id: find_msi
         run: |
+          $arch = "${{ matrix.arch }}"
+          $tag = "${{ github.ref_name }}"
           $msi = Get-ChildItem -Path build -Filter "*.msi" | Select-Object -First 1
-          echo "msi_path=build/$($msi.Name)" >> $env:GITHUB_OUTPUT
-          echo "msi_name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+          $newName = "Ava-$tag-$arch.msi"
+          Copy-Item $msi.FullName $newName
+          echo "msi_name=$newName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            Ava-${{ github.ref_name }}-${{ matrix.arch }}-portable.zip
+            ${{ steps.find_msi.outputs.msi_name }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            Ava-${{ github.ref_name }}-portable.zip
-            ${{ steps.find_msi.outputs.msi_path }}
+            Ava-*.zip
+            Ava-*.msi
