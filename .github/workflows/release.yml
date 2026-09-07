@@ -9,8 +9,18 @@ permissions:
   contents: write
 
 jobs:
+  # Diagnostic job — lists available Qt 6.8 arches so failures can be debugged
+  list-qt-arches:
+    runs-on: windows-latest
+    steps:
+      - name: List available Qt 6.8 architectures
+        run: |
+          pip install aqtinstall
+          python -m aqt list-qt windows desktop 6.8.3
+
   build:
     runs-on: windows-latest
+    needs: list-qt-arches
 
     strategy:
       fail-fast: false
@@ -18,49 +28,54 @@ jobs:
         include:
           - arch: x64
             qt_arch: win64_msvc2022_64
+            cmake_generator: "Visual Studio 18 2026"
             cmake_arch: x64
             wix_arch: x64
-            # qtshadertools is a separate add-on module only on x64
             qt_modules: qtshadertools
-          - arch: x86
-            qt_arch: win32_msvc2022
-            cmake_arch: Win32
-            wix_arch: x86
-            # qtshadertools is bundled in the base package for x86
-            qt_modules: ''
           - arch: arm64
-            qt_arch: win64_msvc2022_arm64
-            cmake_arch: ARM64
+            # Qt 6 ARM64 Windows uses LLVM-MinGW toolchain
+            qt_arch: win64_llvm_mingw
+            cmake_generator: "Ninja"
+            cmake_arch: ""
             wix_arch: arm64
-            # qtshadertools is bundled in the base package for arm64;
-            # ARM64 also requires the x64 host Qt to be installed first
-            qt_modules: ''
+            qt_modules: ""
+          - arch: x86
+            # Qt 6.8 dropped MSVC x86; use MinGW 32-bit via Qt 6.5 (last supported)
+            qt_arch: win32_mingw
+            cmake_generator: "Ninja"
+            cmake_arch: ""
+            wix_arch: x86
+            qt_modules: ""
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ARM64 cross-compilation requires the x64 Qt host tools
-      - name: Install Qt (x64 host tools for ARM64 cross-compile)
-        if: matrix.arch == 'arm64'
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.8.*'
-          arch: win64_msvc2022_64
-          modules: qtshadertools
-          set-env: false
+      - name: Install Ninja (for MinGW/LLVM builds)
+        if: matrix.cmake_generator == 'Ninja'
+        run: choco install ninja -y
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v3
         with:
-          version: '6.8.*'
+          version: ${{ matrix.arch == 'x86' && '6.5.*' || '6.8.*' }}
           arch: ${{ matrix.qt_arch }}
           modules: ${{ matrix.qt_modules }}
 
-      - name: Configure CMake
+      - name: Configure CMake (MSVC)
+        if: matrix.cmake_arch != ''
         run: >
           cmake -S . -B build
+          -G "${{ matrix.cmake_generator }}"
           -A ${{ matrix.cmake_arch }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DCPACK_WIX_ARCHITECTURE=${{ matrix.wix_arch }}
+
+      - name: Configure CMake (MinGW/LLVM)
+        if: matrix.cmake_arch == ''
+        run: >
+          cmake -S . -B build
+          -G "${{ matrix.cmake_generator }}"
           -DCMAKE_BUILD_TYPE=Release
           -DCPACK_WIX_ARCHITECTURE=${{ matrix.wix_arch }}
 
@@ -70,16 +85,17 @@ jobs:
       - name: Deploy Qt dependencies
         run: |
           $qtBin = "$env:Qt6_DIR\bin"
-          & "$qtBin\windeployqt.exe" --qmldir qml --release build\Release\Ava.exe
-          if (Test-Path "build\Release\AvaChat.exe") {
-            & "$qtBin\windeployqt.exe" --qmldir qml\chat --release build\Release\AvaChat.exe
-          }
+          $exePath = if (Test-Path "build\Release\Ava.exe") { "build\Release\Ava.exe" } else { "build\Ava.exe" }
+          & "$qtBin\windeployqt.exe" --qmldir qml --release $exePath
+          $chatPath = if (Test-Path "build\Release\AvaChat.exe") { "build\Release\AvaChat.exe" } elseif (Test-Path "build\AvaChat.exe") { "build\AvaChat.exe" } else { "" }
+          if ($chatPath) { & "$qtBin\windeployqt.exe" --qmldir qml\chat --release $chatPath }
 
       - name: Create portable zip
         run: |
           $tag = "${{ github.ref_name }}"
           $arch = "${{ matrix.arch }}"
-          Compress-Archive -Path build\Release\* -DestinationPath "Ava-$tag-$arch-portable.zip"
+          $srcDir = if (Test-Path "build\Release") { "build\Release\*" } else { "build\*" }
+          Compress-Archive -Path $srcDir -DestinationPath "Ava-$tag-$arch-portable.zip"
 
       - name: Build MSI installer
         run: |
@@ -91,7 +107,7 @@ jobs:
         run: |
           $arch = "${{ matrix.arch }}"
           $tag = "${{ github.ref_name }}"
-          $msi = Get-ChildItem -Path build -Filter "*.msi" | Select-Object -First 1
+          $msi = Get-ChildItem -Recurse -Filter "*.msi" | Select-Object -First 1
           $newName = "Ava-$tag-$arch.msi"
           Copy-Item $msi.FullName $newName
           echo "msi_name=$newName" >> $env:GITHUB_OUTPUT
@@ -107,6 +123,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    if: always() && needs.build.result != 'cancelled'
 
     steps:
       - name: Download all artifacts
