@@ -21,6 +21,7 @@ jobs:
         with:
           version: '6.5.*'
           arch: win64_msvc2019_64
+          modules: qtshadertools
 
       - name: Configure CMake
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
